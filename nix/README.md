@@ -60,18 +60,28 @@ the cache work for ordinary users.
 
 ### Cached systems
 
-| System | Cached | Notes |
+| System | Cached | Runner |
 | --- | --- | --- |
-| `x86_64-linux` | Yes | Built on GitHub `ubuntu-24.04` |
-| `aarch64-darwin` | Yes | Built on GitHub `macos-latest` |
-| `aarch64-linux` | No | No native ARM64 Linux runner. A cross-built `node_modules` is not byte-identical, so its hash would not match `nix/hashes.json`. Builds from source, correctly. |
+| `x86_64-linux` | Yes | `ubuntu-24.04` |
+| `aarch64-linux` | Yes | `ubuntu-24.04-arm` |
+| `aarch64-darwin` | Yes | `macos-latest` |
+
+Each system is built on its own native runner. That is required rather than
+preferred: `bun install --os`/`--cpu` does not produce a byte-identical
+`node_modules`, so a cross-built cache entry would carry a hash that
+disagrees with `nix/hashes.json` and users on that system would rebuild from
+source anyway. Upstream's `bot-nix-hashes.yml` uses native runners for the
+same reason.
+
+All three runners are GitHub-hosted, so they are free in this public
+repository.
 
 ## Maintaining the cache
 
 `.github/workflows/cachix.yml` builds and pushes on every push to `dev` that
-touches more than documentation. It deliberately does not commit to `dev`:
-keeping the branch a clean fast-forward of upstream is what makes
-`git pull upstream dev` work without merge commits.
+touches more than documentation, once for each cached system. It deliberately
+does not commit to `dev`: keeping the branch a clean fast-forward of upstream
+is what makes `git pull upstream dev` work without merge commits.
 
 Before the cache can be pushed from CI, the repository needs a
 `CACHIX_AUTH_TOKEN` secret holding a Cachix token with **write** access to

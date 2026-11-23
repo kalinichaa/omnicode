@@ -7,11 +7,12 @@ name: cachix
 # Keeping dev a clean fast-forward of upstream is the whole point, and
 # nix/hashes.json keeps coming from upstream's bot-nix-hashes.yml.
 #
-# Runs on x86_64-linux and aarch64-darwin. aarch64-linux is deliberately not
-# cached: this fork has no native ARM64 Linux runner, and bun install's
+# Runs natively on all three systems the flake supports: x86_64-linux on
+# ubuntu-24.04, aarch64-linux on ubuntu-24.04-arm, aarch64-darwin on
+# macos-latest. Native runners are required, not a preference: bun install's
 # --os/--cpu cross-compilation does not produce byte-identical node_modules,
-# so a cross-built cache entry would hand users a hash that does not match
-# nix/hashes.json. Those users still build from source, correctly.
+# so a cross-built entry would carry a hash that disagrees with
+# nix/hashes.json and every user on that system would rebuild from source.
 
 on:
   push:
@@ -95,7 +96,16 @@ jobs:
   cache-linux:
     needs: guard
     if: needs.guard.outputs.consistent == 'true'
-    runs-on: ubuntu-24.04
+    name: cache-linux (${{ matrix.system }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - name: Checkout repository
@@ -113,12 +123,13 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Build opencode
-        run: nix build .#packages.x86_64-linux.opencode --print-build-logs
+        run: nix build .#packages.${{ matrix.system }}.opencode --print-build-logs
 
       # check-nix.yml already treats desktop as optional (upstream TODO #11755),
       # so a desktop failure must not redden a cache run that succeeded for the
-      # CLI.
+      # CLI. Desktop only builds for x86_64-linux.
       - name: Build opencode-desktop
+        if: matrix.system == 'x86_64-linux'
         continue-on-error: true
         run: nix build .#packages.x86_64-linux.opencode-desktop --print-build-logs
 
@@ -126,11 +137,11 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "### Cachix (x86_64-linux)"
+            echo "### Cachix (${{ matrix.system }})"
             echo ""
             echo "- rev: \`${{ github.sha }}\`"
             echo "- cache: \`${{ env.CACHE_NAME }}\`"
-            echo "- opencode: \`$(nix path-info .#packages.x86_64-linux.opencode)\`"
+            echo "- opencode: \`$(nix path-info .#packages.${{ matrix.system }}.opencode)\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   cache-darwin:
@@ -167,10 +178,11 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Moves the `known-good` tag to the newest rev that is both hash-consistent
-  # and fully cached on at least x86_64-linux. Pinning
-  # `github:kalinichaa/omnicode/known-good` then always evaluates and
-  # substitutes, whereas `.../dev` can briefly point at a rev whose lockfile
-  # is ahead of nix/hashes.json.
+  # and fully cached on both Linux systems. Needs the whole `cache-linux`
+  # matrix, so a failure on either leg blocks the tag and a user pinning
+  # `github:kalinichaa/omnicode/known-good` is never handed a rev that would
+  # build from source. `.../dev` can briefly point at a rev whose lockfile is
+  # ahead of nix/hashes.json; this tag cannot.
   #
   # A tag, not a commit on dev, so the branch stays a fast-forward of upstream.
   known-good:
