@@ -1,6 +1,18 @@
 {
   description = "OpenCode development flake";
 
+  # Prebuilt binaries for this fork, so `nix flake update` is a download
+  # instead of a from-source build. Nix only honours flake-provided
+  # substituters for trusted users, or when the caller passes
+  # --accept-flake-config. Untrusted users must also add these two values to
+  # nix.settings in their own configuration; see nix/README.md.
+  nixConfig = {
+    extra-substituters = [ "https://omnicode.cachix.org" ];
+    extra-trusted-public-keys = [
+      "omnicode.cachix.org-1:p3Hv7jzsrevaLbnSaMxc53KgjQUpyF9XvK34cteqrfI="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
   };

@@ -1,0 +1,206 @@
+name: cachix
+
+# Warms https://omnicode.cachix.org for this fork so `nix flake update` is a
+# download instead of a from-source build.
+#
+# This workflow never commits to dev: it only builds and pushes store paths.
+# Keeping dev a clean fast-forward of upstream is the whole point, and
+# nix/hashes.json keeps coming from upstream's bot-nix-hashes.yml.
+#
+# Runs on x86_64-linux and aarch64-darwin. aarch64-linux is deliberately not
+# cached: this fork has no native ARM64 Linux runner, and bun install's
+# --os/--cpu cross-compilation does not produce byte-identical node_modules,
+# so a cross-built cache entry would hand users a hash that does not match
+# nix/hashes.json. Those users still build from source, correctly.
+
+on:
+  push:
+    branches: [dev]
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.mdx"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CACHE_NAME: omnicode
+
+jobs:
+  # A stale nix/hashes.json makes the node_modules fixed-output derivation fail
+  # to fetch, so the build cannot even start. That state is normal and
+  # transient: upstream's bot opens a pull request within minutes of a
+  # lockfile change. Skip instead of failing red, and let the next push after
+  # the bot pull request merges warm the cache.
+  #
+  # The check is deliberately cheap: it compares commit times rather than
+  # building, because building node_modules to find out whether we can build
+  # node_modules is circular and would double CI cost.
+  guard:
+    runs-on: ubuntu-24.04
+    outputs:
+      consistent: ${{ steps.check.outputs.consistent }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check hash/lockfile consistency
+        id: check
+        run: |
+          set -euo pipefail
+
+          inputs_rev=$(git log -1 --format=%H -- \
+            bun.lock package.json ':(glob)packages/*/package.json' \
+            ':(glob)services/*/package.json' patches nix/node_modules.nix nix/scripts)
+          hashes_rev=$(git log -1 --format=%H -- nix/hashes.json)
+
+          echo "newest hash-input commit: ${inputs_rev:-none}"
+          echo "nix/hashes.json commit:   ${hashes_rev:-none}"
+
+          # Consistent when no hash input changed after nix/hashes.json was last
+          # written, i.e. the hashes commit is the newer of the two.
+          if [ -z "$hashes_rev" ]; then
+            echo "::warning::nix/hashes.json has no history; skipping"
+            consistent=false
+          elif [ -z "$inputs_rev" ]; then
+            consistent=true
+          elif git merge-base --is-ancestor "$inputs_rev" "$hashes_rev"; then
+            consistent=true
+          else
+            consistent=false
+            echo "::notice::nix/hashes.json predates the newest hash input; waiting for upstream's hashes bot"
+          fi
+
+          echo "consistent=$consistent" >> "$GITHUB_OUTPUT"
+
+      # A stale hash still evaluates (the mismatch only surfaces when the
+      # fixed-output derivation is built), so evaluation alone cannot tell the
+      # two apart. Run it anyway to catch a broken flake.nix even on skipped
+      # runs, which is the one failure the consistency skip would otherwise
+      # hide.
+      - name: Setup Nix
+        uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
+
+      - name: Evaluate flake
+        run: nix eval .#packages.x86_64-linux.opencode.drvPath --raw > /dev/null
+
+  cache-linux:
+    needs: guard
+    if: needs.guard.outputs.consistent == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Nix
+        uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: ${{ env.CACHE_NAME }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build opencode
+        run: nix build .#packages.x86_64-linux.opencode --print-build-logs
+
+      # check-nix.yml already treats desktop as optional (upstream TODO #11755),
+      # so a desktop failure must not redden a cache run that succeeded for the
+      # CLI.
+      - name: Build opencode-desktop
+        continue-on-error: true
+        run: nix build .#packages.x86_64-linux.opencode-desktop --print-build-logs
+
+      - name: Record what was cached
+        run: |
+          set -euo pipefail
+          {
+            echo "### Cachix (x86_64-linux)"
+            echo ""
+            echo "- rev: \`${{ github.sha }}\`"
+            echo "- cache: \`${{ env.CACHE_NAME }}\`"
+            echo "- opencode: \`$(nix path-info .#packages.x86_64-linux.opencode)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cache-darwin:
+    needs: guard
+    if: needs.guard.outputs.consistent == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Nix
+        uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: ${{ env.CACHE_NAME }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build opencode
+        run: nix build .#packages.aarch64-darwin.opencode --print-build-logs
+
+      - name: Record what was cached
+        run: |
+          set -euo pipefail
+          {
+            echo "### Cachix (aarch64-darwin)"
+            echo ""
+            echo "- rev: \`${{ github.sha }}\`"
+            echo "- opencode: \`$(nix path-info .#packages.aarch64-darwin.opencode)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Moves the `known-good` tag to the newest rev that is both hash-consistent
+  # and fully cached on at least x86_64-linux. Pinning
+  # `github:kalinichaa/omnicode/known-good` then always evaluates and
+  # substitutes, whereas `.../dev` can briefly point at a rev whose lockfile
+  # is ahead of nix/hashes.json.
+  #
+  # A tag, not a commit on dev, so the branch stays a fast-forward of upstream.
+  known-good:
+    needs: [guard, cache-linux]
+    if: needs.guard.outputs.consistent == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      # persist-credentials is on so the tag push below uses checkout's own
+      # credential, keeping the token out of the command line and the logs.
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Move known-good tag
+        run: |
+          set -euo pipefail
+
+          # Only this repository, only dev: an upstream checkout or a fork
+          # syncing this file must not move a tag it does not own.
+          if [ "$GITHUB_REPOSITORY" != "kalinichaa/omnicode" ]; then
+            echo "::notice::not the fork; leaving known-good alone"
+            exit 0
+          fi
+          if [ "$GITHUB_REF" != "refs/heads/dev" ]; then
+            echo "::notice::not dev; leaving known-good alone"
+            exit 0
+          fi
+
+          git tag -f known-good "$GITHUB_SHA"
+          git push --force origin refs/tags/known-good
