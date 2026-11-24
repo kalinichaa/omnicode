@@ -3,9 +3,13 @@ name: cachix
 # Warms https://omnicode.cachix.org for this fork so `nix flake update` is a
 # download instead of a from-source build.
 #
-# This workflow never commits to dev: it only builds and pushes store paths.
-# Keeping dev a clean fast-forward of upstream is the whole point, and
-# nix/hashes.json keeps coming from upstream's bot-nix-hashes.yml.
+# This workflow lives on the `cachix` branch, not `dev`. `dev` stays a
+# byte-exact fast-forward mirror of upstream, so the patches only travel on
+# `cachix`, which is rebased onto upstream/dev on each sync. Users who want
+# the cache track `github:kalinichaa/omnicode/cachix`.
+#
+# It never commits to the branch it builds: it only builds and pushes store
+# paths. nix/hashes.json keeps coming from upstream's bot-nix-hashes.yml.
 #
 # Runs natively on all three systems the flake supports: x86_64-linux on
 # ubuntu-24.04, aarch64-linux on ubuntu-24.04-arm, aarch64-darwin on
@@ -16,10 +20,13 @@ name: cachix
 
 on:
   push:
-    branches: [dev]
+    branches: [cachix]
     paths-ignore:
       - "**/*.md"
       - "**/*.mdx"
+  # Needs this file on the default branch, which is `dev` and deliberately
+  # does not carry it, so today the push trigger above is the live path.
+  # Kept so the workflow stays runnable if it ever moves to `dev`.
   workflow_dispatch:
 
 concurrency:
@@ -184,7 +191,7 @@ jobs:
   # build from source. `.../dev` can briefly point at a rev whose lockfile is
   # ahead of nix/hashes.json; this tag cannot.
   #
-  # A tag, not a commit on dev, so the branch stays a fast-forward of upstream.
+  # A tag rather than a commit, so no branch has to be rewritten to record it.
   known-good:
     needs: [guard, cache-linux]
     if: needs.guard.outputs.consistent == 'true'
@@ -203,14 +210,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Only this repository, only dev: an upstream checkout or a fork
-          # syncing this file must not move a tag it does not own.
+          # Only this repository, only the cachix branch: an upstream
+          # checkout or a fork syncing this file must not move a tag it does
+          # not own.
           if [ "$GITHUB_REPOSITORY" != "kalinichaa/omnicode" ]; then
             echo "::notice::not the fork; leaving known-good alone"
             exit 0
           fi
-          if [ "$GITHUB_REF" != "refs/heads/dev" ]; then
-            echo "::notice::not dev; leaving known-good alone"
+          if [ "$GITHUB_REF" != "refs/heads/cachix" ]; then
+            echo "::notice::not the cachix branch; leaving known-good alone"
             exit 0
           fi
 

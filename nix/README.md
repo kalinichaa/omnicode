@@ -4,6 +4,17 @@ This flake builds OpenCode from source, and publishes the result to the
 [`omnicode` Cachix cache](https://omnicode.cachix.org) so that NixOS and
 home-manager users can update with a download instead of a build.
 
+## Branches
+
+| Branch | Contents | Use |
+| --- | --- | --- |
+| `dev` | Byte-exact fast-forward mirror of `anomalyco/opencode` `dev` | Nothing Nix-specific; never rewritten |
+| `cachix` | `dev` plus `nixConfig` and the cache workflow | Track this one to get the cache |
+
+The cache patch cannot live on `dev` without making `dev` diverge from
+upstream, so it lives on `cachix`, which is rebased onto `upstream/dev` on
+each sync. `dev` is never force-pushed.
+
 ## Flake outputs
 
 | Output | Description |
@@ -18,20 +29,26 @@ home-manager users can update with a download instead of a build.
 nix flake update && nh home switch
 ```
 
-`nix flake update` moves the lockfile to the newest `dev` commit. If that
-commit changed `bun.lock`, `nix/hashes.json` must catch up first — upstream's
+```nix
+inputs.opencode.url = "github:kalinichaa/omnicode/cachix";
+```
+
+`nix flake update` moves the lockfile to the newest `cachix` commit, which is
+the newest upstream commit plus the cache patch. If that commit changed
+`bun.lock`, `nix/hashes.json` must catch up first — upstream's
 `bot-nix-hashes` workflow opens a pull request for it within minutes. During
 that window the build fails on the `node_modules` fixed-output derivation
 rather than falling back to a slower build, because a fixed-output derivation
-cannot silently rebuild with a different hash.
+cannot silently rebuild with a different hash. The cache workflow skips
+rather than fails during that window, so an empty cache during it is normal.
 
 ### Known-good revisions
 
-`dev` is always the newest upstream commit, so it is occasionally
+`cachix` is always the newest upstream commit, so it is occasionally
 un-buildable in the window described above. The `known-good` tag is moved by
 CI to the newest revision that is both hash-consistent and fully cached on
-x86_64-linux. Track it instead of `dev` when you want every update to
-evaluate:
+both Linux systems. Track it instead of `cachix` when you want every update
+to evaluate:
 
 ```nix
 inputs.opencode.url = "github:kalinichaa/omnicode/known-good";
@@ -78,10 +95,15 @@ repository.
 
 ## Maintaining the cache
 
-`.github/workflows/cachix.yml` builds and pushes on every push to `dev` that
-touches more than documentation, once for each cached system. It deliberately
-does not commit to `dev`: keeping the branch a clean fast-forward of upstream
-is what makes `git pull upstream dev` work without merge commits.
+`.github/workflows/cachix.yml` builds and pushes on every push to `cachix`
+that touches more than documentation, once for each cached system. It
+deliberately does not commit to the branch it builds: keeping `dev` a clean
+fast-forward of upstream is what makes `git pull upstream dev` work without
+merge commits.
+
+The workflow's `push` trigger is `branches: [cachix]`. Its `workflow_dispatch`
+trigger would need the file on the default branch (`dev`), which by design
+does not carry it, so the push trigger is the live path.
 
 Before the cache can be pushed from CI, the repository needs a
 `CACHIX_AUTH_TOKEN` secret holding a Cachix token with **write** access to
